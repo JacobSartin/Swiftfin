@@ -1,66 +1,73 @@
-name: "Build 🔨"
+# template taken from the YTLitePlus github + some of my own modifications.
+# https://github.com/YTLitePlus/YTLitePlus/blob/main/.github/workflows/buildapp.yml
+name: "Build and Release Swiftfin"
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "Modify the bundle ID (optional)"
+        default: "org.jellyfin.swiftfin"
+        required: false
+        type: string
+      app_name:
+        description: "Modify the name of the app on the Home Screen (optional)"
+        default: "Swiftfin Test"
+        required: false
+        type: string
 
 jobs:
   build:
-    name: "Build 🔨"
-    if: github.event.pull_request.draft == false
-    strategy:
-      matrix:
-        scheme:
-          - "Swiftfin"
-          - "Swiftfin tvOS"
-
+    name: Build Swiftfin
     runs-on: macos-14
+    permissions:
+      contents: write
 
-    steps:    
-      - name: Checkout
-        uses: actions/checkout@v4
+    steps:
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Install SwiftGen
-        run: brew install swiftgen
+      - name: Checkout Main
+        uses: actions/checkout@v4.1.6
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          brew install ldid dpkg make
+          brew install swiftgen
+          carthage update --use-xcframeworks --cache-builds
 
       - name: Set Xcode Version
         run: sudo xcode-select -s "/Applications/Xcode_15.3.app"
 
-      - name: Cache Carthage
-        uses: actions/cache@v4
-        id: carthage-cache
+      - name: Build the Project
+        run: |
+          xcodebuild clean build \
+          -project "Swiftfin.xcodeproj" \
+          -scheme "Swiftfin" \
+          -configuration Release \
+          -derivedDataPath build/derived_data \
+          CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
+      - name: Create Payload Directory
+        run: mkdir -p build/Payload
+
+      - name: Copy App to Payload
+        run: cp -r build/derived_data/Build/Products/Release-iphoneos/"Swiftfin iOS.app" build/Payload
+
+      - name: Fake Code Sign the App
+        run: ldid -S build/Payload/"Swiftfin iOS.app"/"Swiftfin iOS"
+
+      - name: Package IPA
+        run: |
+          cd build
+          zip -r Swiftfin.ipa Payload
+
+      - name: Upload IPA as Artifact
+        uses: actions/upload-artifact@v4.3.3
         with:
-          path: Carthage
-          key: ${{ runner.os }}-carthage-${{ hashFiles('**/Cartfile.resolved') }}
-          restore-keys: ${{ runner.os }}-carthage-
-
-      - name: Update Carthage
-        run: carthage update --use-xcframeworks --cache-builds
-
-      # FIXME: caches would keep failed compiles?
-
-      # - name: Cache Swift packages
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: PackageCache
-      #     key: ${{ runner.os }}-${{ matrix.scheme }}-spm-${{ hashFiles('**/Package.resolved') }}
-      #     restore-keys: ${{ runner.os }}-${{ matrix.scheme }}-spm-
-
-      - name: Build
-        uses: nick-fields/retry@v2
-        with:
-          max_attempts: 3
-          retry_on: error
-          timeout_minutes: 60
-          command: |
-            xcodebuild build -project "Swiftfin.xcodeproj" \
-            -scheme "${{ matrix.scheme }}" \
-            -clonedSourcePackagesDirPath PackageCache \
-            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+          name: Swiftfin-ipa
+          path: build/Swiftfin.ipa
